@@ -6,6 +6,7 @@ import sys
 from typing import Callable
 import math
 import subprocess
+import subprocess
 from pathlib import Path
 import os
 
@@ -21,8 +22,8 @@ except ImportError:
     XArmAPI = None
 
 os.environ["QT_QPA_PLATFORMTHEME"] = "xdgdesktopportal"
-ROBOT_HOME = (118.8, 2.30, 163.7, -175.6, -2.6, -56)
-ROBOT_WORK = (255.4, 10.2, 85.6, 179.9, 5.5, -117.4)
+ROBOT_HOME = (281.7, 0.80, 121.8, 171.0, 6.7, 125.9)
+ROBOT_WORK = (303.2, -17, 87.5, 174.4, 1.2, 88.3)
 ROBOT_STEP_MM = 10.0
 
 # Dimensiones de las figuras en mm (convertidas de cm)
@@ -38,7 +39,7 @@ class VentanaControl(QtWidgets.QMainWindow):
         self.ui.setupUi(self)
 
         self.posicion = Posicion(0, 0)
-        self._robot_pose = list(ROBOT_WORK)
+        self._robot_pose = list(ROBOT_HOME)
         self.arm = None
         self._movimiento_activo: tuple[str, Callable[[Posicion], Posicion]] | None = None
         self._vision_controller: VisionDetectionController | None = None
@@ -165,9 +166,8 @@ class VentanaControl(QtWidgets.QMainWindow):
             arm.motion_enable(enable=True)
             arm.set_mode(0)
             arm.set_state(state=0)
-            arm.move_gohome(wait=True)
-            arm.set_position(*ROBOT_WORK, speed=20, wait=True)
-            self._robot_pose = list(ROBOT_WORK)
+            arm.set_position(*ROBOT_HOME, speed=20, wait=True)
+            self._robot_pose = list(ROBOT_HOME)
             self._actualizar_estado_robot(f"conectado: {ip}")
             return arm
         except Exception as exc:
@@ -326,7 +326,7 @@ class VentanaControl(QtWidgets.QMainWindow):
             self._vision_controller.close()
         if self.arm is not None:
             try:
-                self.arm.move_gohome(wait=True)
+                self.arm.set_position(*ROBOT_HOME, speed=20, wait=True)
                 self.arm.disconnect()
             except Exception:
                 pass
