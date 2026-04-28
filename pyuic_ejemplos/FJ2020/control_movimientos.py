@@ -5,15 +5,15 @@ from pathlib import Path
 import sys
 from typing import Callable
 import math
-import threading
+import subprocess
 from pathlib import Path
 import os
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 from Lite6 import Ui_MainWindow
-from deteccion import ejecutar_deteccion_figuras
 from movimientos import Abajo, Arriba, Derecha, Izquierda, Posicion
+from vision_detection import VisionDetectionController
 
 try:
     from xarm.wrapper import XArmAPI
@@ -36,12 +36,12 @@ class VentanaControl(QtWidgets.QMainWindow):
         super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
-        self._ip_robot = ip_robot
 
         self.posicion = Posicion(0, 0)
         self._robot_pose = list(ROBOT_WORK)
         self.arm = None
         self._movimiento_activo: tuple[str, Callable[[Posicion], Posicion]] | None = None
+        self._vision_controller: VisionDetectionController | None = None
         self._hold_timer = QtCore.QTimer(self)
         self._hold_timer.setInterval(100)
         self._hold_timer.timeout.connect(self._ejecutar_continuo)
@@ -52,6 +52,7 @@ class VentanaControl(QtWidgets.QMainWindow):
         self._hold_delay.timeout.connect(self._iniciar_repeticion)
 
         self._crear_indicadores()
+        self._crear_vista_camara()
         self.arm = self._conectar_robot(ip_robot)
         self._conectar_botones()
         self._actualizar_vista()
@@ -64,6 +65,13 @@ class VentanaControl(QtWidgets.QMainWindow):
         self.lbl_robot = QtWidgets.QLabel("Robot: desconectado", self.ui.centralwidget)
         self.lbl_robot.setGeometry(30, 250, 380, 24)
         self.lbl_robot.setStyleSheet("color: white; font-weight: bold;")
+
+    def _crear_vista_camara(self) -> None:
+        self.camera_label = QtWidgets.QLabel(self.ui.frame)
+        self.camera_label.setGeometry(0, 0, self.ui.frame.width(), self.ui.frame.height())
+        self.camera_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.camera_label.setStyleSheet("background-color: #000; color: white;")
+        self.camera_label.setText("Camara apagada")
 
     def _conectar_botones(self) -> None:
         self.ui.B_arriba.pressed.connect(
@@ -87,9 +95,24 @@ class VentanaControl(QtWidgets.QMainWindow):
         self.ui.TrianguloButton.clicked.connect(self._dibujar_triangulo)
         self.ui.CuadradoButton.clicked.connect(self._dibujar_cuadrado)
         self.ui.CirculoButton.clicked.connect(self._dibujar_circulo)
-        self.ui.pushButton_2.clicked.connect(self._iniciar_modo_auto)
-        
+
         self.ui.SubirButton.clicked.connect(self._seleccionar_archivo)
+        self.ui.pushButton_2.clicked.connect(self._activar_auto)
+        self.ui.pushButton.clicked.connect(self._desactivar_manual)
+
+    def _activar_auto(self) -> None:
+        if self._vision_controller is None:
+            self._vision_controller = VisionDetectionController(
+                self.camera_label,
+                status_callback=self._actualizar_estado_robot,
+                parent=self,
+            )
+
+        self._vision_controller.start()
+
+    def _desactivar_manual(self) -> None:
+        if self._vision_controller is not None:
+            self._vision_controller.stop()
 
     def _iniciar_movimiento_continuo(
         self, nombre: str, accion: Callable[[Posicion], Posicion]
@@ -134,7 +157,8 @@ class VentanaControl(QtWidgets.QMainWindow):
 
     def _conectar_robot(self, ip: str):
         if XArmAPI is None:
-            raise RuntimeError("xArm API no disponible")
+            self._actualizar_estado_robot("modo local: xArm API no disponible")
+            return None
 
         try:
             arm = XArmAPI(ip)
@@ -147,7 +171,8 @@ class VentanaControl(QtWidgets.QMainWindow):
             self._actualizar_estado_robot(f"conectado: {ip}")
             return arm
         except Exception as exc:
-            raise RuntimeError(f"no fue posible conectar al robot: {exc}") from exc
+            self._actualizar_estado_robot(f"modo local: {exc}")
+            return None
 
     def _actualizar_estado_robot(self, texto: str) -> None:
         if hasattr(self, "lbl_robot"):
@@ -206,21 +231,6 @@ class VentanaControl(QtWidgets.QMainWindow):
         if archivo:
             nombre_archivo = Path(archivo).name
             self.ui.archivo_texto.setText(nombre_archivo)
-
-    def _iniciar_modo_auto(self) -> None:
-        def _lanzar() -> None:
-            ejecutar_deteccion_figuras(
-                ip_camara="10.50.120.60",
-                robot_ip=self._ip_robot,
-                modo_auto=True,
-            )
-
-        try:
-            hilo = threading.Thread(target=_lanzar, daemon=True)
-            hilo.start()
-            self._actualizar_estado_robot("modo auto iniciado")
-        except Exception as exc:
-            self._actualizar_estado_robot(f"error al iniciar auto: {exc}")
 
     def _dibujar_cuadrado(self) -> None:
         """Dibuja un cuadrado de 15x15 cm iniciando desde ROBOT_WORK"""
@@ -312,6 +322,8 @@ class VentanaControl(QtWidgets.QMainWindow):
             self._actualizar_estado_robot(f"error: {exc}")
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        if self._vision_controller is not None:
+            self._vision_controller.close()
         if self.arm is not None:
             try:
                 self.arm.move_gohome(wait=True)
