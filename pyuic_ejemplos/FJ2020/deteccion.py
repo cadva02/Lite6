@@ -265,37 +265,40 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> int:
-    args = parse_args()
-    ip = args.ip or DEFAULT_PHONE_IP
-    config = DroidCamConfig(ip=ip, port=args.port, path=args.path)
+def ejecutar_deteccion_figuras(
+    ip_camara: str = DEFAULT_PHONE_IP,
+    robot_ip: str | None = None,
+    puerto: int = DEFAULT_PORT,
+    ruta: str = DEFAULT_PATH,
+    modo_auto: bool = False,
+) -> int:
+    config = DroidCamConfig(ip=ip_camara, port=puerto, path=ruta)
     arm = None
 
     try:
         print("Cargando modelo...")
         model = get_model(model_id=MODEL_ID, api_key=API_KEY)
 
-        # Abrir stream de DroidCam por URL (igual que droidcam_ip.py)
         cap = cv2.VideoCapture(config.url)
         if not cap.isOpened():
-            print(f"Error: No se pudo abrir el stream en {config.url}. Revisa la IP y que DroidCam esté corriendo en el teléfono.")
+            print(
+                f"Error: No se pudo abrir el stream en {config.url}. Revisa la IP y que DroidCam esté corriendo en el teléfono."
+            )
             return 1
 
-        # Anotadores
         box_annotator = sv.BoxAnnotator()
         label_annotator = sv.LabelAnnotator()
 
-        if args.auto and args.robot_ip:
-            arm = _conectar_robot(args.robot_ip)
-            print(f"Robot conectado para modo automático: {args.robot_ip}")
-        elif args.auto:
+        if modo_auto and robot_ip:
+            arm = _conectar_robot(robot_ip)
+            print(f"Robot conectado para modo automático: {robot_ip}")
+        elif modo_auto:
             print("Modo automático activo sin IP de robot; se mostrará solo la detección.")
 
         print(f"Conectado con éxito al modelo: {MODEL_ID}")
         print(f"Conectado al stream: {config.url}")
         print("Iniciando bucle de video... Presiona 'q' para salir.")
 
-        # Crear la ventana antes del bucle
         cv2.namedWindow("Deteccion Roboflow", cv2.WINDOW_NORMAL)
         secuencia_ejecutada = False
 
@@ -305,13 +308,11 @@ def main() -> int:
                 print("Error al leer el frame del stream.")
                 break
 
-            # Inferencia
             results = model.infer(frame)[0]
             detections = sv.Detections.from_inference(results)
             figuras = _shape_detections_from_results(results, detections)
             mejores_figuras = _mejor_por_figura(figuras)
 
-            # DEBUG: Imprimir si detecta algo
             if mejores_figuras:
                 orden = " -> ".join(
                     label for label in SHAPE_SEQUENCE if label in mejores_figuras
@@ -319,12 +320,11 @@ def main() -> int:
                 if orden:
                     print(f"Figuras detectadas en secuencia objetivo: {orden}")
 
-            # Dibujar resultados
             annotated_frame = box_annotator.annotate(scene=frame.copy(), detections=detections)
             annotated_frame = label_annotator.annotate(scene=annotated_frame, detections=detections)
             annotated_frame = _dibujar_guias(annotated_frame, mejores_figuras)
 
-            if args.auto and not secuencia_ejecutada and all(
+            if modo_auto and not secuencia_ejecutada and all(
                 label in mejores_figuras for label in SHAPE_SEQUENCE
             ):
                 print("Ejecutando secuencia: triangulo -> cuadrado -> circulo")
@@ -337,10 +337,8 @@ def main() -> int:
                 print("Secuencia completada.")
                 break
 
-            # Mostrar en pantalla
             cv2.imshow("Deteccion Roboflow", annotated_frame)
 
-            # El waitKey es VITAL en Linux para que la ventana se procese
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 break
@@ -353,8 +351,8 @@ def main() -> int:
                 arm.disconnect()
             except Exception:
                 pass
-        # Un pequeño hack para asegurar que las ventanas se cierren en Linux
-        for i in range(1, 5):
+
+        for _ in range(1, 5):
             cv2.waitKey(1)
 
     except Exception as e:
@@ -362,6 +360,18 @@ def main() -> int:
         return 1
 
     return 0
+
+
+def main() -> int:
+    args = parse_args()
+    ip = args.ip or DEFAULT_PHONE_IP
+    return ejecutar_deteccion_figuras(
+        ip_camara=ip,
+        robot_ip=args.robot_ip,
+        puerto=args.port,
+        ruta=args.path,
+        modo_auto=args.auto,
+    )
 
 
 if __name__ == "__main__":

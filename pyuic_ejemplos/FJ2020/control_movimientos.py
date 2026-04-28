@@ -5,13 +5,14 @@ from pathlib import Path
 import sys
 from typing import Callable
 import math
-import subprocess
+import threading
 from pathlib import Path
 import os
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 from Lite6 import Ui_MainWindow
+from deteccion import ejecutar_deteccion_figuras
 from movimientos import Abajo, Arriba, Derecha, Izquierda, Posicion
 
 try:
@@ -207,17 +208,16 @@ class VentanaControl(QtWidgets.QMainWindow):
             self.ui.archivo_texto.setText(nombre_archivo)
 
     def _iniciar_modo_auto(self) -> None:
-        script_deteccion = Path(__file__).with_name("deteccion.py")
-        try:
-            subprocess.Popen(
-                [
-                    sys.executable,
-                    str(script_deteccion),
-                    "--auto",
-                    "--robot-ip",
-                    self._ip_robot,
-                ]
+        def _lanzar() -> None:
+            ejecutar_deteccion_figuras(
+                ip_camara="10.50.120.60",
+                robot_ip=self._ip_robot,
+                modo_auto=True,
             )
+
+        try:
+            hilo = threading.Thread(target=_lanzar, daemon=True)
+            hilo.start()
             self._actualizar_estado_robot("modo auto iniciado")
         except Exception as exc:
             self._actualizar_estado_robot(f"error al iniciar auto: {exc}")
