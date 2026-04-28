@@ -35,6 +35,7 @@ class VentanaControl(QtWidgets.QMainWindow):
         super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
+        self._ip_robot = ip_robot
 
         self.posicion = Posicion(0, 0)
         self._robot_pose = list(ROBOT_WORK)
@@ -85,6 +86,7 @@ class VentanaControl(QtWidgets.QMainWindow):
         self.ui.TrianguloButton.clicked.connect(self._dibujar_triangulo)
         self.ui.CuadradoButton.clicked.connect(self._dibujar_cuadrado)
         self.ui.CirculoButton.clicked.connect(self._dibujar_circulo)
+        self.ui.pushButton_2.clicked.connect(self._iniciar_modo_auto)
         
         self.ui.SubirButton.clicked.connect(self._seleccionar_archivo)
 
@@ -203,6 +205,22 @@ class VentanaControl(QtWidgets.QMainWindow):
         if archivo:
             nombre_archivo = Path(archivo).name
             self.ui.archivo_texto.setText(nombre_archivo)
+
+    def _iniciar_modo_auto(self) -> None:
+        script_deteccion = Path(__file__).with_name("deteccion.py")
+        try:
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    str(script_deteccion),
+                    "--auto",
+                    "--robot-ip",
+                    self._ip_robot,
+                ]
+            )
+            self._actualizar_estado_robot("modo auto iniciado")
+        except Exception as exc:
+            self._actualizar_estado_robot(f"error al iniciar auto: {exc}")
 
     def _dibujar_cuadrado(self) -> None:
         """Dibuja un cuadrado de 15x15 cm iniciando desde ROBOT_WORK"""
