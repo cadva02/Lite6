@@ -5,14 +5,13 @@ from pathlib import Path
 import sys
 from typing import Callable
 import math
-import threading
+import subprocess
 from pathlib import Path
 import os
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 from Lite6 import Ui_MainWindow
-from deteccion import ejecutar_deteccion_figuras
 from movimientos import Abajo, Arriba, Derecha, Izquierda, Posicion
 
 try:
@@ -21,8 +20,8 @@ except ImportError:
     XArmAPI = None
 
 os.environ["QT_QPA_PLATFORMTHEME"] = "xdgdesktopportal"
-ROBOT_HOME = (118.8, 2.30, 163.7, -175.6, -2.6, -56)
-ROBOT_WORK = (255.4, 10.2, 85.6, 179.9, 5.5, -117.4)
+ROBOT_HOME = (281.7, 0.80, 121.8, 171.0, 6.7, 125.9)
+ROBOT_WORK = (303.2, -17, 87.5, 174.4, 1.2, 88.3)
 ROBOT_STEP_MM = 10.0
 
 # Dimensiones de las figuras en mm (convertidas de cm)
@@ -36,10 +35,9 @@ class VentanaControl(QtWidgets.QMainWindow):
         super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
-        self._ip_robot = ip_robot
 
         self.posicion = Posicion(0, 0)
-        self._robot_pose = list(ROBOT_WORK)
+        self._robot_pose = list(ROBOT_HOME)
         self.arm = None
         self._movimiento_activo: tuple[str, Callable[[Posicion], Posicion]] | None = None
         self._hold_timer = QtCore.QTimer(self)
@@ -87,7 +85,6 @@ class VentanaControl(QtWidgets.QMainWindow):
         self.ui.TrianguloButton.clicked.connect(self._dibujar_triangulo)
         self.ui.CuadradoButton.clicked.connect(self._dibujar_cuadrado)
         self.ui.CirculoButton.clicked.connect(self._dibujar_circulo)
-        self.ui.pushButton_2.clicked.connect(self._iniciar_modo_auto)
         
         self.ui.SubirButton.clicked.connect(self._seleccionar_archivo)
 
@@ -141,9 +138,8 @@ class VentanaControl(QtWidgets.QMainWindow):
             arm.motion_enable(enable=True)
             arm.set_mode(0)
             arm.set_state(state=0)
-            arm.move_gohome(wait=True)
-            arm.set_position(*ROBOT_WORK, speed=20, wait=True)
-            self._robot_pose = list(ROBOT_WORK)
+            arm.set_position(*ROBOT_HOME, speed=20, wait=True)
+            self._robot_pose = list(ROBOT_HOME)
             self._actualizar_estado_robot(f"conectado: {ip}")
             return arm
         except Exception as exc:
@@ -206,21 +202,6 @@ class VentanaControl(QtWidgets.QMainWindow):
         if archivo:
             nombre_archivo = Path(archivo).name
             self.ui.archivo_texto.setText(nombre_archivo)
-
-    def _iniciar_modo_auto(self) -> None:
-        def _lanzar() -> None:
-            ejecutar_deteccion_figuras(
-                ip_camara="10.50.120.60",
-                robot_ip=self._ip_robot,
-                modo_auto=True,
-            )
-
-        try:
-            hilo = threading.Thread(target=_lanzar, daemon=True)
-            hilo.start()
-            self._actualizar_estado_robot("modo auto iniciado")
-        except Exception as exc:
-            self._actualizar_estado_robot(f"error al iniciar auto: {exc}")
 
     def _dibujar_cuadrado(self) -> None:
         """Dibuja un cuadrado de 15x15 cm iniciando desde ROBOT_WORK"""
@@ -314,7 +295,7 @@ class VentanaControl(QtWidgets.QMainWindow):
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         if self.arm is not None:
             try:
-                self.arm.move_gohome(wait=True)
+                self.arm.set_position(*ROBOT_HOME, speed=20, wait=True)
                 self.arm.disconnect()
             except Exception:
                 pass

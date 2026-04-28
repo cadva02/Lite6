@@ -1,8 +1,9 @@
 import argparse
 import math
 import os
+from functools import lru_cache
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 import cv2
 from inference import get_model
@@ -25,8 +26,8 @@ API_KEY = "1zTntUVnABXCBtOPSfPx"
 DEFAULT_PORT = 4747
 DEFAULT_PATH = "/video"
 DEFAULT_PHONE_IP = "10.50.120.60"
-ROBOT_HOME = (118.8, 2.30, 163.7, -175.6, -2.6, -56)
-ROBOT_WORK = (255.4, 10.2, 85.6, 179.9, 5.5, -117.4)
+ROBOT_HOME = (281.7, 0.80, 121.8, 171.0, 6.7, 125.9)
+ROBOT_WORK = (303.3, -17, 87.5, 174.4, 1.2, 88.3)
 VISION_SPAN_MM = (140.0, 140.0)
 
 SHAPE_SEQUENCE = ("triangulo", "cuadrado", "circulo")
@@ -70,7 +71,7 @@ def _normalizar_etiqueta(label: object) -> Optional[str]:
     return LABEL_ALIASES.get(texto)
 
 
-def _coerce_float(value: object, default: float = 0.0) -> float:
+def _coerce_float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -188,6 +189,32 @@ def _mejor_por_figura(shapes: list[ShapeDetection]) -> dict[str, ShapeDetection]
     return mejores
 
 
+@lru_cache(maxsize=1)
+def cargar_modelo() -> Any:
+    return get_model(model_id=MODEL_ID, api_key=API_KEY)
+
+
+def procesar_frame(
+    frame: Any,
+    model: Any,
+    box_annotator: Any | None = None,
+    label_annotator: Any | None = None,
+) -> tuple[Any, dict[str, ShapeDetection], sv.Detections]:
+    results = model.infer(frame)[0]
+    detections = sv.Detections.from_inference(results)
+    figuras = _shape_detections_from_results(results, detections)
+    mejores_figuras = _mejor_por_figura(figuras)
+
+    annotated_frame = frame.copy()
+    if box_annotator is not None:
+        annotated_frame = box_annotator.annotate(scene=annotated_frame, detections=detections)
+    if label_annotator is not None:
+        annotated_frame = label_annotator.annotate(scene=annotated_frame, detections=detections)
+    annotated_frame = _dibujar_guias(annotated_frame, mejores_figuras)
+
+    return annotated_frame, mejores_figuras, detections
+
+
 def _conectar_robot(robot_ip: str):
     if XArmAPI is None:
         raise RuntimeError("xArm API no disponible")
@@ -201,7 +228,7 @@ def _conectar_robot(robot_ip: str):
     return arm
 
 
-def _pose_desde_frame(frame: object, shape: ShapeDetection) -> tuple[float, float, float, float, float, float]:
+def _pose_desde_frame(frame: Any, shape: ShapeDetection) -> tuple[float, float, float, float, float, float]:
     height, width = frame.shape[:2]
     x0, y0, z0, roll0, pitch0, yaw0 = ROBOT_WORK
 
@@ -216,7 +243,7 @@ def _mover_robot_a_figura(arm, frame: object, shape: ShapeDetection) -> None:
     arm.set_position(x=x, y=y, z=z, roll=roll, pitch=pitch, yaw=yaw, speed=20, wait=True)
 
 
-def _dibujar_guias(frame: object, mejores: dict[str, ShapeDetection]) -> object:
+def _dibujar_guias(frame: Any, mejores: dict[str, ShapeDetection]) -> Any:
     annotated = frame.copy()
     for indice, label in enumerate(SHAPE_SEQUENCE, start=1):
         shape = mejores.get(label)
@@ -262,6 +289,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="xArm IP address used in auto mode.",
     )
+    parser.add_argument(
+        "--preview",
+        action="store_true",
+        help="Show the OpenCV preview window when running this script directly.",
+    )
     return parser.parse_args()
 
 
@@ -271,13 +303,14 @@ def ejecutar_deteccion_figuras(
     puerto: int = DEFAULT_PORT,
     ruta: str = DEFAULT_PATH,
     modo_auto: bool = False,
+    mostrar_ventana: bool = False,
 ) -> int:
     config = DroidCamConfig(ip=ip_camara, port=puerto, path=ruta)
     arm = None
 
     try:
         print("Cargando modelo...")
-        model = get_model(model_id=MODEL_ID, api_key=API_KEY)
+        model = cargar_modelo()
 
         cap = cv2.VideoCapture(config.url)
         if not cap.isOpened():
@@ -299,7 +332,6 @@ def ejecutar_deteccion_figuras(
         print(f"Conectado al stream: {config.url}")
         print("Iniciando bucle de video... Presiona 'q' para salir.")
 
-        cv2.namedWindow("Deteccion Roboflow", cv2.WINDOW_NORMAL)
         secuencia_ejecutada = False
 
         while True:
@@ -308,10 +340,12 @@ def ejecutar_deteccion_figuras(
                 print("Error al leer el frame del stream.")
                 break
 
-            results = model.infer(frame)[0]
-            detections = sv.Detections.from_inference(results)
-            figuras = _shape_detections_from_results(results, detections)
-            mejores_figuras = _mejor_por_figura(figuras)
+            annotated_frame, mejores_figuras, detections = procesar_frame(
+                frame,
+                model,
+                box_annotator,
+                label_annotator,
+            )
 
             if mejores_figuras:
                 orden = " -> ".join(
@@ -319,10 +353,6 @@ def ejecutar_deteccion_figuras(
                 )
                 if orden:
                     print(f"Figuras detectadas en secuencia objetivo: {orden}")
-
-            annotated_frame = box_annotator.annotate(scene=frame.copy(), detections=detections)
-            annotated_frame = label_annotator.annotate(scene=annotated_frame, detections=detections)
-            annotated_frame = _dibujar_guias(annotated_frame, mejores_figuras)
 
             if modo_auto and not secuencia_ejecutada and all(
                 label in mejores_figuras for label in SHAPE_SEQUENCE
@@ -335,16 +365,19 @@ def ejecutar_deteccion_figuras(
                         _mover_robot_a_figura(arm, frame, figura)
                 secuencia_ejecutada = True
                 print("Secuencia completada.")
-                break
 
-            cv2.imshow("Deteccion Roboflow", annotated_frame)
+            if mostrar_ventana:
+                cv2.imshow("Deteccion Roboflow", annotated_frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q"):
+                    break
 
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
+            if modo_auto and secuencia_ejecutada:
                 break
 
         cap.release()
-        cv2.destroyAllWindows()
+        if mostrar_ventana:
+            cv2.destroyAllWindows()
         if arm is not None:
             try:
                 arm.move_gohome(wait=True)
@@ -371,6 +404,7 @@ def main() -> int:
         puerto=args.port,
         ruta=args.path,
         modo_auto=args.auto,
+        mostrar_ventana=args.preview,
     )
 
 
