@@ -6,9 +6,9 @@ import sys
 from typing import Callable
 import math
 import subprocess
-import subprocess
 from pathlib import Path
 import os
+import re
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
@@ -41,6 +41,7 @@ class VentanaControl(QtWidgets.QMainWindow):
         self.posicion = Posicion(0, 0)
         self._robot_pose = list(ROBOT_HOME)
         self.arm = None
+        self._archivo_ngc: str | None = None
         self._movimiento_activo: tuple[str, Callable[[Posicion], Posicion]] | None = None
         self._vision_controller: VisionDetectionController | None = None
         self._hold_timer = QtCore.QTimer(self)
@@ -98,6 +99,7 @@ class VentanaControl(QtWidgets.QMainWindow):
         self.ui.CirculoButton.clicked.connect(self._dibujar_circulo)
 
         self.ui.SubirButton.clicked.connect(self._seleccionar_archivo)
+        self.ui.DibujarButton_2.clicked.connect(self._dibujar_archivo_ngc)
         self.ui.pushButton_2.clicked.connect(self._activar_auto)
         self.ui.pushButton.clicked.connect(self._desactivar_manual)
 
@@ -214,13 +216,6 @@ class VentanaControl(QtWidgets.QMainWindow):
 
     def _seleccionar_archivo(self) -> None:
         """Abre un diálogo de selección de archivos nativo del OS"""
-        
-        # Forzar a Qt a intentar usar el tema del sistema (opcional pero recomendado)
-        # Esto se puede poner al inicio del programa
-        # os.environ["QT_QPA_PLATFORMTHEME"] = "gtk3" # o "kde"
-
-        # getOpenFileName usa por defecto el diálogo nativo a menos que 
-        # se le pase la opción QFileDialog.DontUseNativeDialog
         archivo, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
             "Seleccionar archivo NGC",
@@ -229,8 +224,93 @@ class VentanaControl(QtWidgets.QMainWindow):
         )
 
         if archivo:
+            self._archivo_ngc = archivo
             nombre_archivo = Path(archivo).name
             self.ui.archivo_texto.setText(nombre_archivo)
+            self._actualizar_estado_robot(f"archivo cargado: {nombre_archivo}")
+
+    def _dibujar_archivo_ngc(self) -> None:
+        """Dibuja la trayectoria del archivo NGC seleccionado"""
+        if self._archivo_ngc is None:
+            self._actualizar_estado_robot("error: no hay archivo seleccionado")
+            return
+
+        if self.arm is None:
+            self._actualizar_estado_robot("modo local")
+            return
+
+        try:
+            self._actualizar_estado_robot("dibujando archivo...")
+            x0, y0, z0, roll0, pitch0, yaw0 = ROBOT_WORK
+            self.arm.set_position(x=x0, y=y0, z=z0, roll=roll0, pitch=pitch0, yaw=yaw0, speed=20, wait=True)
+            
+            # Leer el archivo NGC y extraer las coordenadas X, Y
+            lineas_procesadas = 0
+            try:
+                with open(self._archivo_ngc, 'r') as gcode:
+                    origen_archivo = None  # punto inicial del archivo NGC
+                    for line in gcode:
+                        line = line.strip()
+                        # Extraer coordenadas X, Y del formato "X123.45 Y67.89"
+                        coord = re.findall(r'[XY]-?\d+\.?\d*', line)
+                        if coord:
+                            xx = None
+                            yy = None
+
+                            for c in coord:
+                                if c.startswith('X'):
+                                    xx = float(c[1:])
+                                elif c.startswith('Y'):
+                                    yy = float(c[1:])
+
+                            if xx is not None and yy is not None:
+                                if origen_archivo is None:
+                                    # El primer punto del archivo se alinea con ROBOT_WORK
+                                    origen_archivo = (xx, yy)
+                                    target_x = x0
+                                    target_y = y0
+                                else:
+                                    # Mover relativo al primer punto del archivo
+                                    dx = xx - origen_archivo[0]
+                                    dy = yy - origen_archivo[1]
+                                    target_x = x0 + dx
+                                    target_y = y0 + dy
+
+                                # Ejecutar movimiento manteniendo Z y orientación de ROBOT_WORK
+                                self.arm.set_position(
+                                    x=target_x,
+                                    y=target_y,
+                                    z=z0,
+                                    roll=roll0,
+                                    pitch=pitch0,
+                                    yaw=yaw0,
+                                    speed=100,
+                                    wait=True,
+                                )
+                                self._robot_pose = [target_x, target_y, z0, roll0, pitch0, yaw0]
+                                lineas_procesadas += 1
+
+                self._actualizar_estado_robot(f"archivo dibujado: {lineas_procesadas} puntos")
+                # Volver a la posición de trabajo al terminar
+                try:
+                    if self.arm is not None:
+                        self.arm.set_position(*ROBOT_WORK, speed=20, wait=True)
+                        self._robot_pose = list(ROBOT_WORK)
+                        # Limpiar selección de archivo para permitir cargar uno nuevo
+                        self._archivo_ngc = None
+                        try:
+                            self.ui.archivo_texto.setText("")
+                        except Exception:
+                            pass
+                        self._actualizar_estado_robot("regresado a ROBOT_WORK")
+                except Exception as exc:
+                    self._actualizar_estado_robot(f"error al regresar a ROBOT_WORK: {exc}")
+            except FileNotFoundError:
+                self._actualizar_estado_robot(f"error: archivo no encontrado")
+            except Exception as exc:
+                self._actualizar_estado_robot(f"error leyendo archivo: {exc}")
+        except Exception as exc:
+            self._actualizar_estado_robot(f"error: {exc}")
 
     def _dibujar_cuadrado(self) -> None:
         """Dibuja un cuadrado de 15x15 cm iniciando desde ROBOT_WORK"""
